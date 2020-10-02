@@ -171,9 +171,7 @@ static inline bgh_stat_t _clear_table(bgh_tbl_t *tbl) {
 
 static void *refresh_thread(void *ctx) {
     bgh_t *ssns = (bgh_t*)ctx;
-    time_t last = 0;
-
-    last = time(NULL);
+    time_t last = time(NULL);
 
     int pindex = prime_nearest_idx(ssns->config.starting_rows);
 
@@ -223,7 +221,12 @@ static void *refresh_thread(void *ctx) {
         // Lookups are tried on both, if the first lookup fails. When a 
         // lookup succeeds on the active (and about to be replaced) table, 
         // the data is removed from that table and inserted in the standby table
-        sleep(ssns->config.timeout);
+        time_t tos = time(NULL);
+        while(time(NULL) - tos < ssns->config.timeout) {
+            // Make sure we don't hold up any shutdowns
+            if(!ssns->running) return NULL;
+            usleep(10000);
+        }
 
         bgh_tbl_t *old = ssns->active;
 
@@ -261,7 +264,16 @@ bgh_t *bgh_config_new(bgh_config_t *config, void (*free_cb)(void *)) {
     table->refreshing = false;
     pthread_mutex_init(&table->lock, NULL);
 
-    pthread_create(&table->refresh, NULL, refresh_thread, table);
+    if(pthread_create(&table->refresh, NULL, refresh_thread, table)) {
+        // We failed to create a thread. Should never be able to reach this
+        // case....
+        _bgh_free_table(table->active, true);
+        pthread_mutex_destroy(&table->lock);
+        free(table);
+        return NULL;
+    }
+
+    pthread_setname_np(table->refresh, "bgh_refresh");
 
     return table;
 }
